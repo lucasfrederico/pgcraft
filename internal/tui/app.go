@@ -1,8 +1,8 @@
 // Package tui contém o modelo Bubble Tea raiz e os painéis.
 //
-// Phase 1: scaffold com 3 painéis (schemas/tables/details) populados com
-// mock data. Vim-style nav (j/k/h/l), Tab cicla painéis, q sai.
-// Phase 2 vai trocar mocks por dados reais do Postgres.
+// Phase 2: connection real ao Postgres via pgx + queries em information_schema.
+// I/O é async via tea.Cmd; UI mostra "loading..." enquanto query roda.
+// Vim-style nav (j/k/h/l), Tab cicla painéis, q sai.
 package tui
 
 import (
@@ -11,13 +11,16 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+
+	"github.com/lucasfrederico/pgcraft/internal/db"
 )
 
 // App é o modelo raiz Bubble Tea.
 type App struct {
 	connStr string
+	client  *db.Client // populado após connectedMsg
 
-	// dimensões da janela (atualizadas via tea.WindowSizeMsg)
+	// dimensões da janela
 	width  int
 	height int
 
@@ -27,49 +30,51 @@ type App struct {
 	details panel
 	active  panelID
 
-	// status bar message (transitory, ex: "connected to dev DB")
+	// estado de loading por painel — não bloqueia UI, mostra "loading..."
+	loadingTables  bool
+	loadingDetails bool
+
+	// status bar
 	statusMsg string
+	errMsg    string // último erro a mostrar (vermelho)
 }
 
-// NewApp constrói o modelo raiz. connStr ainda não é usada em Phase 1
-// (mocks). Phase 2 vai abrir pool aqui.
+// NewApp constrói o modelo raiz. Em Phase 2 sem connStr cai em mock mode
+// (útil pra screenshots e dev sem DB local). Com connStr real dispara
+// connectCmd no Init.
 func NewApp(connStr string) *App {
 	a := &App{
 		connStr: connStr,
 		active:  panelSchemas,
-		schemas: panel{
-			title: "Schemas",
-			items: []string{"public", "audit", "reporting", "auth"},
-		},
-		tables: panel{
-			title: "Tables (public)",
-			items: []string{"users", "posts", "comments", "tenants", "tags", "audit_log"},
-		},
-		details: panel{
-			title: "Details (users)",
-			items: []string{
-				"Columns",
-				"  id            bigserial PK",
-				"  email         varchar(255) UNIQUE",
-				"  tenant_id     bigint FK → tenants",
-				"  created_at    timestamptz",
-				"",
-				"Indexes",
-				"  users_pkey (id)",
-				"  users_email_idx (email)",
-				"  users_tenant_idx (tenant_id)",
-			},
-		},
+		schemas: panel{title: "Schemas"},
+		tables:  panel{title: "Tables"},
+		details: panel{title: "Details"},
 	}
+
 	if connStr == "" {
-		a.statusMsg = "no connection (Phase 1 mock mode)"
+		// modo mock — pra dev sem Postgres rodando
+		a.statusMsg = "no DATABASE_URL (mock mode)"
+		a.schemas.items = []string{"public", "audit", "reporting", "auth"}
+		a.tables.items = []string{"users", "posts", "comments", "tenants"}
+		a.details.items = []string{
+			"Columns",
+			"  id            bigserial PK",
+			"  email         varchar(255) UNIQUE",
+			"  tenant_id     bigint FK → tenants",
+			"  created_at    timestamptz",
+		}
 	} else {
-		a.statusMsg = "connection string loaded (real DB in Phase 2)"
+		a.statusMsg = "connecting..."
 	}
 	return a
 }
 
-func (a *App) Init() tea.Cmd { return nil }
+func (a *App) Init() tea.Cmd {
+	if a.connStr != "" {
+		return connectCmd(a.connStr)
+	}
+	return nil
+}
 
 func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
@@ -80,16 +85,69 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tea.KeyMsg:
 		return a.handleKey(msg)
+
+	case connectedMsg:
+		a.client = msg.client
+		a.statusMsg = "connected · " + a.client.HostInfo()
+		return a, loadSchemasCmd(a.client)
+
+	case connectFailedMsg:
+		a.errMsg = "connect failed: " + msg.err.Error()
+		a.statusMsg = "disconnected"
+		return a, nil
+
+	case schemasLoadedMsg:
+		if msg.err != nil {
+			a.errMsg = "load schemas: " + msg.err.Error()
+			return a, nil
+		}
+		a.schemas.items = msg.schemas
+		a.schemas.cursor = 0
+		a.tables.items = nil
+		a.details.items = nil
+		// auto-carrega tables do primeiro schema (UX default)
+		if len(msg.schemas) > 0 && a.client != nil {
+			a.loadingTables = true
+			a.tables.title = "Tables (" + msg.schemas[0] + ")"
+			return a, loadTablesCmd(a.client, msg.schemas[0])
+		}
+		return a, nil
+
+	case tablesLoadedMsg:
+		a.loadingTables = false
+		if msg.err != nil {
+			a.errMsg = "load tables: " + msg.err.Error()
+			return a, nil
+		}
+		a.tables.items = msg.tables
+		a.tables.cursor = 0
+		a.tables.title = "Tables (" + msg.schema + ")"
+		a.details.items = nil
+		return a, nil
+
+	case tableDetailsLoadedMsg:
+		a.loadingDetails = false
+		if msg.err != nil {
+			a.errMsg = "load details: " + msg.err.Error()
+			return a, nil
+		}
+		a.details.items = formatDetails(msg.columns, msg.indexes)
+		a.details.cursor = 0
+		a.details.viewport = 0
+		a.details.title = "Details (" + msg.table + ")"
+		return a, nil
 	}
 	return a, nil
 }
 
-// handleKey é a tabela de teclado. Vim-style nav + Tab/Shift+Tab pra
-// cycle entre painéis. Mantida pequena por enquanto; Phase 3 vai
-// adicionar SQL editor mode com keymap diferente.
+// handleKey é a tabela de teclado. Phase 2 conecta Enter à query real.
 func (a *App) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	a.errMsg = "" // qualquer keypress limpa erro stale
 	switch msg.String() {
 	case "q", "ctrl+c":
+		if a.client != nil {
+			a.client.Close()
+		}
 		return a, tea.Quit
 	case "tab":
 		a.active = a.active.next()
@@ -100,19 +158,51 @@ func (a *App) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "k", "up":
 		a.activePanel().moveUp()
 	case "l", "right", "enter":
-		// Phase 1: enter no schema "abre" tables; enter na table "abre" details.
-		// Tudo mock por enquanto. Phase 2 dispara query.
-		if a.active == panelSchemas {
-			a.active = panelTables
-		} else if a.active == panelTables {
-			a.active = panelDetails
-		}
+		return a, a.openSelected()
 	case "h", "left":
 		a.active = a.active.prev()
 	case "?":
-		a.statusMsg = "[j/k] nav  [h/l/tab] cycle panels  [enter] open  [q] quit"
+		a.statusMsg = "[j/k] nav · [h/l/tab] cycle · [enter] open · [q] quit"
+	case "r":
+		// refresh — reaproveita Phase 2 já que é só re-disparar load
+		if a.client != nil {
+			return a, loadSchemasCmd(a.client)
+		}
 	}
 	return a, nil
+}
+
+// openSelected é o "Enter" semântico: depende de qual painel está ativo.
+// schemas → carrega tables; tables → carrega details; details → no-op
+// (Phase 3 vai abrir sample data ou SQL editor).
+func (a *App) openSelected() tea.Cmd {
+	if a.client == nil {
+		// mock mode: só rotaciona pra próximo painel
+		a.active = a.active.next()
+		return nil
+	}
+	switch a.active {
+	case panelSchemas:
+		schema := a.schemas.currentItem()
+		if schema == "" {
+			return nil
+		}
+		a.loadingTables = true
+		a.tables.title = "Tables (" + schema + ")"
+		a.active = panelTables
+		return loadTablesCmd(a.client, schema)
+	case panelTables:
+		schema := a.schemas.currentItem()
+		table := a.tables.currentItem()
+		if schema == "" || table == "" {
+			return nil
+		}
+		a.loadingDetails = true
+		a.details.title = "Details (" + table + ")"
+		a.active = panelDetails
+		return loadTableDetailsCmd(a.client, schema, table)
+	}
+	return nil
 }
 
 func (a *App) activePanel() *panel {
@@ -127,39 +217,93 @@ func (a *App) activePanel() *panel {
 	return &a.schemas
 }
 
-// View renderiza o frame. Três painéis lado a lado + status bar.
-// Layout: 20% / 30% / 50% da largura. Altura = window - 2 (status bar).
+// formatDetails transforma columns + indexes em []string que o painel renderiza.
+// Manter formatado pra alinhar nomes/tipos visualmente.
+func formatDetails(cols []db.Column, idxs []db.Index) []string {
+	var out []string
+
+	if len(cols) > 0 {
+		out = append(out, "Columns")
+		// calcula largura máx do nome pra alinhar
+		maxNameLen := 0
+		for _, c := range cols {
+			if len(c.Name) > maxNameLen {
+				maxNameLen = len(c.Name)
+			}
+		}
+		for _, c := range cols {
+			flags := ""
+			if c.IsPK {
+				flags = " PK"
+			} else if !c.Nullable {
+				flags = " NOT NULL"
+			}
+			padded := c.Name + strings.Repeat(" ", maxNameLen-len(c.Name))
+			out = append(out, fmt.Sprintf("  %s  %s%s", padded, c.DataType, flags))
+		}
+		out = append(out, "")
+	}
+
+	if len(idxs) > 0 {
+		out = append(out, "Indexes")
+		for _, i := range idxs {
+			marker := "  "
+			if i.IsPrimary {
+				marker = "* "
+			}
+			out = append(out, marker+i.Name)
+		}
+	}
+
+	if len(out) == 0 {
+		out = append(out, "(no columns or indexes)")
+	}
+	return out
+}
+
+// View renderiza o frame. 3 painéis + status bar + hint.
 func (a *App) View() string {
 	if a.width == 0 || a.height == 0 {
 		return "loading..."
 	}
 
-	bodyHeight := a.height - 2 // 1 linha status + 1 hint
+	bodyHeight := a.height - 2
 	if bodyHeight < 5 {
 		bodyHeight = 5
 	}
 
 	wSchemas := a.width * 20 / 100
 	wTables := a.width * 30 / 100
-	wDetails := a.width - wSchemas - wTables - 6 // 6 = bordas/padding
+	wDetails := a.width - wSchemas - wTables - 6
 
-	schemasView := renderPanel(&a.schemas, a.active == panelSchemas, wSchemas, bodyHeight)
-	tablesView := renderPanel(&a.tables, a.active == panelTables, wTables, bodyHeight)
-	detailsView := renderPanel(&a.details, a.active == panelDetails, wDetails, bodyHeight)
+	// loading overlays — itens do painel ficam "loading..." enquanto query roda
+	schemasItems := a.schemas
+	tablesItems := a.tables
+	detailsItems := a.details
+	if a.loadingTables && len(a.tables.items) == 0 {
+		tablesItems.items = []string{"loading..."}
+	}
+	if a.loadingDetails && len(a.details.items) == 0 {
+		detailsItems.items = []string{"loading..."}
+	}
+
+	schemasView := renderPanel(&schemasItems, a.active == panelSchemas, wSchemas, bodyHeight)
+	tablesView := renderPanel(&tablesItems, a.active == panelTables, wTables, bodyHeight)
+	detailsView := renderPanel(&detailsItems, a.active == panelDetails, wDetails, bodyHeight)
 
 	body := lipgloss.JoinHorizontal(lipgloss.Top, schemasView, tablesView, detailsView)
 
 	hint := keyHintStyle.Render("[j/k]") + mutedStyle.Render(" nav   ") +
-		keyHintStyle.Render("[tab]") + mutedStyle.Render(" cycle panels   ") +
+		keyHintStyle.Render("[tab]") + mutedStyle.Render(" cycle   ") +
 		keyHintStyle.Render("[enter]") + mutedStyle.Render(" open   ") +
-		keyHintStyle.Render("[?]") + mutedStyle.Render(" help   ") +
+		keyHintStyle.Render("[r]") + mutedStyle.Render(" refresh   ") +
 		keyHintStyle.Render("[q]") + mutedStyle.Render(" quit")
 
-	statusLine := statusBarStyle.Render(fmt.Sprintf(
-		"pgcraft · active: %s · %s",
-		a.active.String(),
-		a.statusMsg,
-	))
+	statusContent := fmt.Sprintf("pgcraft · %s", a.statusMsg)
+	if a.errMsg != "" {
+		statusContent = lipgloss.NewStyle().Foreground(lipgloss.Color("#ff5f5f")).Render("✘ " + a.errMsg)
+	}
+	statusLine := statusBarStyle.Render(statusContent)
 
 	return body + "\n" + hint + "\n" + statusLine
 }
@@ -172,7 +316,7 @@ func (a *App) panelHeight() int {
 	return h
 }
 
-// renderPanel desenha um painel com borda, título, e itens com cursor.
+// renderPanel desenha um painel com borda, título e itens.
 func renderPanel(p *panel, active bool, width, height int) string {
 	style := panelStyle
 	if active {
@@ -184,7 +328,7 @@ func renderPanel(p *panel, active bool, width, height int) string {
 	lines = append(lines, panelTitleStyle.Render(p.title))
 	lines = append(lines, mutedStyle.Render(strings.Repeat("─", width-4)))
 
-	innerHeight := height - 3 // header + sep + bottom border
+	innerHeight := height - 3
 	if innerHeight < 1 {
 		innerHeight = 1
 	}
@@ -196,7 +340,6 @@ func renderPanel(p *panel, active bool, width, height int) string {
 
 	for i := p.viewport; i < visibleEnd; i++ {
 		line := p.items[i]
-		// truncate se passar da largura
 		if len(line) > width-4 {
 			line = line[:width-7] + "..."
 		}
@@ -209,7 +352,6 @@ func renderPanel(p *panel, active bool, width, height int) string {
 		}
 	}
 
-	// pad to height
 	for len(lines) < height-1 {
 		lines = append(lines, "")
 	}

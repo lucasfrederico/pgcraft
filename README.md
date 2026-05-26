@@ -3,7 +3,7 @@
 > A lazygit-style TUI for PostgreSQL. Navigate schemas, run queries, view explain plans —
 > without ever leaving the terminal.
 
-🚧 **Work in progress.** Building in the open. README is a roadmap right now.
+🚧 **Work in progress.** Building in the open. Phase 3 done (SQL editor + results).
 
 ## Why?
 
@@ -13,10 +13,21 @@ at FlagShip, side projects). The existing tools are either:
 - **psql** — terrific but no navigation, every operation is a `\d users` command from memory
 - **pgcli** — REPL with autocomplete; better but still REPL-shaped
 - **pgAdmin / DBeaver / TablePlus / DataGrip** — heavy GUIs, slow startup, some paid
+- **lazysql / Sqlit** — multi-DB but shallow on each one; can't surface Postgres-specific stuff
 
 `lazygit` proved how nice it is to navigate git visually inside a terminal. `k9s` did the
-same for Kubernetes. `lazydocker` for Docker. **No one did it for Postgres.** `pgcraft` is
-that tool.
+same for Kubernetes. `lazydocker` for Docker. **No one did it for Postgres specifically.**
+`pgcraft` is that tool.
+
+## Postgres-only by design
+
+This is **not** a generic SQL TUI. Going multi-DB means either shallow features or
+abstracting away exactly the parts that make Postgres worth using —
+`EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)`, `pg_stat_*`, partitioning, logical replication,
+JSONB ops, vector indexes. The roadmap leans into those.
+
+If you need multi-DB CRUD, `lazysql` is the right tool. `pgcraft` is for people who
+actually live in Postgres.
 
 ## Planned UX (mockup)
 
@@ -44,37 +55,38 @@ that tool.
 
 ## Roadmap
 
-- [ ] **Phase 1 — TUI scaffold:** layout, panels, vim-like navigation
-- [ ] **Phase 2 — Schema browser:** schemas → tables → columns/indexes/sample data
-- [ ] **Phase 3 — SQL editor:** write queries, execute, paginated results
-- [ ] **Phase 4 — Explain plan view:** EXPLAIN ANALYZE visualized
-- [ ] **Phase 5 — Polish:** search/filter, multi-connection, theme, Docker image
-- [ ] **Phase 6 — Launch:** README with demo gif, ship to HN
+- [x] **Phase 1 — TUI scaffold:** layout, panels, vim-like navigation
+- [x] **Phase 2 — Schema browser:** schemas → tables → columns/indexes
+- [x] **Phase 3 — SQL editor:** write queries, execute, paginated results
+- [ ] **Phase 4 — EXPLAIN view + search:** EXPLAIN ANALYZE visualized, table filter, Docker image
+- [ ] **Phase 5 — Postgres-deep features:** `pg_stat_*` dashboard, partitioning view, JSONB helper, replication monitor
+- [ ] **Phase 6 — Launch:** README demo gif, HN announcement
 
-## Install (planned)
-
-```bash
-# Homebrew
-brew install lucasfrederico/tap/pgcraft
-
-# Go install
-go install github.com/lucasfrederico/pgcraft@latest
-
-# Docker
-docker run -it ghcr.io/lucasfrederico/pgcraft "postgres://localhost/mydb"
-```
-
-## Usage (planned)
+## Usage today
 
 ```bash
+git clone https://github.com/lucasfrederico/pgcraft.git
+cd pgcraft
+go build -o pgcraft ./cmd/pgcraft
+
 # Connect via URL
-pgcraft "postgres://user:pass@host:5432/dbname"
+./pgcraft "postgres://user:pass@host:5432/dbname"
 
 # Or via env
-DATABASE_URL=... pgcraft
+DATABASE_URL="postgres://localhost/mydb" ./pgcraft
+```
 
-# Multiple connections (cycle with Tab)
-pgcraft "postgres://local/dev" "postgres://staging/db"
+Keys:
+- `j/k` navigate · `h/l` / `Tab` cycle panels · `Enter` open
+- `s` open SQL editor · `Ctrl+J` execute · `Esc` cancel
+- `esc/x` close results · `r` refresh · `q` quit
+
+## Install (planned for Phase 6 launch)
+
+```bash
+brew install lucasfrederico/tap/pgcraft
+go install github.com/lucasfrederico/pgcraft@latest
+docker run -it ghcr.io/lucasfrederico/pgcraft "postgres://..."
 ```
 
 ## Stack

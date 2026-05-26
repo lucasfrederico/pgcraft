@@ -217,8 +217,40 @@ func (a *App) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		a.search.Focus()
 	case "e":
 		return a, a.explainCurrentTable()
+	case "T":
+		// stats da current table (pg_stat_user_tables)
+		return a, a.tableStatsCurrent()
+	case "A":
+		// activity (pg_stat_activity)
+		return a, a.activity()
 	}
 	return a, nil
+}
+
+// tableStatsCurrent dispara TableStats com schema+table atualmente selecionados.
+func (a *App) tableStatsCurrent() tea.Cmd {
+	if a.client == nil {
+		return nil
+	}
+	schema := a.schemas.currentItem()
+	table := a.tables.currentItem()
+	if schema == "" || table == "" {
+		a.errMsg = "select a schema and table first"
+		return nil
+	}
+	a.queryRunning = true
+	a.statusMsg = fmt.Sprintf("stats %s.%s ...", schema, table)
+	return tableStatsCmd(a.client, schema, table)
+}
+
+// activity dispara pg_stat_activity.
+func (a *App) activity() tea.Cmd {
+	if a.client == nil {
+		return nil
+	}
+	a.queryRunning = true
+	a.statusMsg = "loading activity..."
+	return activityCmd(a.client)
 }
 
 // handleSearchKey: search bar aberta. Esc fecha (sem aplicar),

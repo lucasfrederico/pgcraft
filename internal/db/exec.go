@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 // QueryResult representa output de uma query ad-hoc — colunas, rows
@@ -88,6 +89,18 @@ func formatValue(v any) string {
 		return x
 	case time.Time:
 		return x.Format(time.RFC3339)
+	case time.Duration:
+		return x.Round(time.Second).String()
+	case pgtype.Interval:
+		// pgx Interval { Microseconds, Days, Months, Valid }
+		if !x.Valid {
+			return "NULL"
+		}
+		d := time.Duration(x.Microseconds) * time.Microsecond
+		if x.Days != 0 || x.Months != 0 {
+			return fmt.Sprintf("%dmo %dd %s", x.Months, x.Days, d.Round(time.Second))
+		}
+		return d.Round(time.Second).String()
 	case []byte:
 		if len(x) > 16 {
 			return fmt.Sprintf("\\x%x...", x[:16])

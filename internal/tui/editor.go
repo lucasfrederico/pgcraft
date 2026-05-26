@@ -15,7 +15,7 @@ type editor struct {
 func newEditor() editor {
 	ta := textarea.New()
 	ta.Placeholder = "Type SQL here. Ctrl+J to execute. Esc to cancel."
-	ta.CharLimit = 0    // no limit
+	ta.CharLimit = 0 // no limit
 	ta.ShowLineNumbers = true
 	ta.Prompt = "│ "
 	ta.SetWidth(80)

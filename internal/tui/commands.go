@@ -70,3 +70,23 @@ func execQueryCmd(c *db.Client, sql string) tea.Cmd {
 		return queryExecutedMsg{result: result, err: err}
 	}
 }
+
+// tableStatsCmd e activityCmd reusam queryExecutedMsg — UI trata igual
+// a uma query do editor (mesmo render panel).
+func tableStatsCmd(c *db.Client, schema, table string) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		result, err := c.TableStats(ctx, schema, table)
+		return queryExecutedMsg{result: result, err: err}
+	}
+}
+
+func activityCmd(c *db.Client) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		result, err := c.Activity(ctx)
+		return queryExecutedMsg{result: result, err: err}
+	}
+}

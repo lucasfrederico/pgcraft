@@ -58,7 +58,7 @@ actually live in Postgres.
 - [x] **Phase 1 — TUI scaffold:** layout, panels, vim-like navigation
 - [x] **Phase 2 — Schema browser:** schemas → tables → columns/indexes
 - [x] **Phase 3 — SQL editor:** write queries, execute, paginated results
-- [ ] **Phase 4 — EXPLAIN view + search:** EXPLAIN ANALYZE visualized, table filter, Docker image
+- [x] **Phase 4 — EXPLAIN + search + Docker:** EXPLAIN view, live filter (`/`), multi-arch Docker
 - [ ] **Phase 5 — Postgres-deep features:** `pg_stat_*` dashboard, partitioning view, JSONB helper, replication monitor
 - [ ] **Phase 6 — Launch:** README demo gif, HN announcement
 
@@ -78,8 +78,19 @@ DATABASE_URL="postgres://localhost/mydb" ./pgcraft
 
 Keys:
 - `j/k` navigate · `h/l` / `Tab` cycle panels · `Enter` open
-- `s` open SQL editor · `Ctrl+J` execute · `Esc` cancel
+- `/` filter current panel (live) · `Esc` close filter
+- `e` `EXPLAIN` selected table · `s` open SQL editor · `Ctrl+J` execute
 - `esc/x` close results · `r` refresh · `q` quit
+
+## Docker
+
+```bash
+docker build -t pgcraft .
+docker run -it --network host pgcraft "postgres://localhost/mydb"
+```
+
+Multi-stage build → ~15MB final image (alpine + static binary).
+ARM64 and amd64 supported via `docker buildx`.
 
 ## Install (planned for Phase 6 launch)
 

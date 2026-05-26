@@ -39,6 +39,10 @@ type App struct {
 	results      resultsView
 	queryRunning bool
 
+	// Phase 4: search bar (filter painel ativo) + EXPLAIN command
+	search        search
+	lastTableName string
+
 	// status bar
 	statusMsg string
 	errMsg    string // último erro a mostrar (vermelho)
@@ -55,6 +59,7 @@ func NewApp(connStr string) *App {
 		tables:  panel{title: "Tables"},
 		details: panel{title: "Details"},
 		editor:  newEditor(),
+		search:  newSearch(),
 	}
 
 	if connStr == "" {
@@ -93,6 +98,9 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyMsg:
 		if a.editor.open {
 			return a.handleEditorKey(msg)
+		}
+		if a.search.open {
+			return a.handleSearchKey(msg)
 		}
 		return a.handleKey(msg)
 
@@ -205,8 +213,49 @@ func (a *App) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			a.results.Clear()
 			a.statusMsg = "results cleared"
 		}
+	case "/":
+		a.search.Focus()
+	case "e":
+		return a, a.explainCurrentTable()
 	}
 	return a, nil
+}
+
+// handleSearchKey: search bar aberta. Esc fecha (sem aplicar),
+// Enter mantém filtro mas tira foco. Demais keys: input + re-filter live.
+func (a *App) handleSearchKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc":
+		a.search.Blur()
+		return a, nil
+	case "enter":
+		a.search.ti.Blur()
+		a.search.open = false
+		return a, nil
+	default:
+		var cmd tea.Cmd
+		a.search.ti, cmd = a.search.ti.Update(msg)
+		return a, cmd
+	}
+}
+
+// explainCurrentTable: EXPLAIN da current table (sem ANALYZE pra não custar).
+// Usa execQueryCmd existente — result aparece no results panel como
+// qualquer query.
+func (a *App) explainCurrentTable() tea.Cmd {
+	if a.client == nil {
+		return nil
+	}
+	schema := a.schemas.currentItem()
+	table := a.tables.currentItem()
+	if schema == "" || table == "" {
+		a.errMsg = "select a schema and table first"
+		return nil
+	}
+	sql := fmt.Sprintf(`EXPLAIN (FORMAT TEXT) SELECT * FROM "%s"."%s" LIMIT 100`, schema, table)
+	a.queryRunning = true
+	a.statusMsg = fmt.Sprintf("EXPLAIN %s.%s ...", schema, table)
+	return execQueryCmd(a.client, sql)
 }
 
 // handleEditorKey: teclado quando editor está aberto.
@@ -353,9 +402,20 @@ func (a *App) View() string {
 	wTables := a.width * 30 / 100
 	wDetails := a.width - wSchemas - wTables - 6
 
+	// snapshot dos painéis (filter aplicado se search ativa)
 	schemasItems := a.schemas
 	tablesItems := a.tables
 	detailsItems := a.details
+	if q := a.search.Query(); q != "" {
+		switch a.active {
+		case panelSchemas:
+			schemasItems.items = filterItems(a.schemas.items, q)
+		case panelTables:
+			tablesItems.items = filterItems(a.tables.items, q)
+		case panelDetails:
+			detailsItems.items = filterItems(a.details.items, q)
+		}
+	}
 	if a.loadingTables && len(a.tables.items) == 0 {
 		tablesItems.items = []string{"loading..."}
 	}

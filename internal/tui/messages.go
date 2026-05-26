@@ -33,3 +33,9 @@ type tableDetailsLoadedMsg struct {
 	indexes []db.Index
 	err     error
 }
+
+// Phase 3: result de query ad-hoc do SQL editor.
+type queryExecutedMsg struct {
+	result *db.QueryResult
+	err    error
+}

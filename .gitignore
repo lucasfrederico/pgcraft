@@ -1,0 +1,36 @@
+# Binaries
+/pgcraft
+/bin/
+/dist/
+/build/
+
+# Go
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+vendor/
+go.work
+go.work.sum
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Local config
+.env
+.env.local
+~/.config/pgcraft/
+
+# Test artifacts
+coverage.out
+*.cover
